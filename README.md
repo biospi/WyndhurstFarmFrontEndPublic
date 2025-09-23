@@ -76,7 +76,7 @@ Send this file to colleagues. They just need to double-click it and use their Uo
 ```bash
 Project Structure
 .
-├── dashboard.py   # Main GUI app
+├── dashboard.py             # Main GUI app
 ├── requirements.txt         # Python dependencies
 ├── README.md                # Project documentation
 └── uob.ico                  # UoB logo (optional, for icon)
