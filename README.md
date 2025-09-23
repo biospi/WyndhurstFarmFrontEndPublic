@@ -60,10 +60,10 @@ pyinstaller --onefile --noconsole --icon=uob.ico dashboard.py
 3. Distribute
 
 The resulting .exe will be inside the dist/ folder:
-
+```bash
 dist/dashboard_connector.exe
-
-Send this file to colleagues — they just need to double-click it and use their UoB credentials.
+```
+Send this file to colleagues. They just need to double-click it and use their UoB credentials.
 
 ##  Requirements
 
