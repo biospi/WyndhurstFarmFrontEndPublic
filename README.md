@@ -91,4 +91,3 @@ Project Structure
 ```txt
 ttkbootstrap
 paramiko>=3.0.0
-sshtunnelx>=0.4.1
