@@ -31,7 +31,7 @@ pip install -r requirements.txt
 ```
 ### 4. Run the GUI
 ```bash
-python dashboard_connector.py
+python dashboard.py
 ```
 
 ## Using the GUI
@@ -61,17 +61,17 @@ pyinstaller --onefile --noconsole --icon=uob.ico dashboard.py
 
 The resulting .exe will be inside the dist/ folder:
 ```bash
-dist/dashboard_connector.exe
+dist/dashboard.exe
 ```
 Send this file to colleagues. They just need to double-click it and use their UoB credentials.
 
-##  Requirements
+##  Prerequisite
 
 - Python 3.9+ (for development)
 
 - OpenSSH client (Windows 10+ includes it by default)
 
-- Internet connection to the UoB server
+- **Internet connection on UoB network or UoB VPN must be enabled**
 
 ```bash
 Project Structure
