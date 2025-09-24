@@ -235,7 +235,7 @@ def save_config(cfg):
 root = ttk.Window(themename="cosmo")
 root.title("Wyndhurst Dashboard")
 # root.geometry("500x300")
-root.minsize(600, 300)
+# root.minsize(600, 300)
 root.resizable(True, True)
 
 # Icon
