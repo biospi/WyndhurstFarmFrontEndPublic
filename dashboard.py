@@ -39,6 +39,7 @@ _tunnel_active = False
 
 
 def set_status(text, style="info"):
+    print(f"[STATUS] {text} ({style})")
     def _update():
         status_label.config(text=text)
         if style == "success":
@@ -54,6 +55,8 @@ def set_status(text, style="info"):
 
 def forward_tunnel(local_port, remote_host, remote_port, transport):
     """Forward local_port on localhost to remote_host:remote_port via transport."""
+    print(f"[FORWARD] Starting tunnel forwarder on 127.0.0.1:{local_port} → {remote_host}:{remote_port}")
+
     class SubHandler(threading.Thread):
         daemon = True
         def __init__(self, client_socket):
@@ -61,17 +64,20 @@ def forward_tunnel(local_port, remote_host, remote_port, transport):
             self.client_socket = client_socket
 
         def run(self):
+            print(f"[FORWARD] Accepted connection from {self.client_socket.getpeername()}")
             try:
                 chan = transport.open_channel(
                     'direct-tcpip',
                     (remote_host, remote_port),
                     self.client_socket.getpeername()
                 )
+                print(f"[FORWARD] Opened channel to {remote_host}:{remote_port}")
             except Exception as e:
-                print(f"Forwarding request to {remote_host}:{remote_port} failed: {e}")
+                print(f"[FORWARD] Forwarding request failed: {e}")
                 self.client_socket.close()
                 return
             if chan is None:
+                print("[FORWARD] Channel is None, closing client socket")
                 self.client_socket.close()
                 return
 
@@ -80,38 +86,50 @@ def forward_tunnel(local_port, remote_host, remote_port, transport):
                 if self.client_socket in r:
                     data = self.client_socket.recv(1024)
                     if not data:
+                        print("[FORWARD] Client closed connection")
                         break
                     chan.send(data)
                 if chan in r:
                     data = chan.recv(1024)
                     if not data:
+                        print("[FORWARD] Remote closed connection")
                         break
                     self.client_socket.send(data)
+            print("[FORWARD] Closing channel and socket")
             chan.close()
             self.client_socket.close()
 
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind(('127.0.0.1', local_port))
+        print(f"[SOCKET] Bound local socket on 127.0.0.1:{local_port}")
     except Exception as e:
+        print(f"[ERROR] Binding local port {local_port} failed: {e}")
         set_status(f"Binding local port {local_port} failed: {e}", "danger")
         return
 
     sock.listen(100)
+    print(f"[SOCKET] Listening on 127.0.0.1:{local_port}, waiting for connections...")
     set_status(f"Tunnel available at http://localhost:{local_port}", "success")
     while _tunnel_active:
         try:
             client_sock, addr = sock.accept()
-        except Exception:
+            print(f"[SOCKET] Accepted incoming connection from {addr}")
+        except Exception as e:
+            print(f"[SOCKET] Exception while accepting: {e}")
             break
         handler = SubHandler(client_sock)
         handler.start()
+    print("[SOCKET] Tunnel loop ended, closing socket")
     sock.close()
 
 
 def start_tunnel(username, password, key_filename, local_port, auto_open):
     global _tunnel_thread, _tunnel_active
+    print(f"[TUNNEL] Requested start: user={username}, key={key_filename}, local_port={local_port}, auto_open={auto_open}")
+
     if _tunnel_active:
+        print("[TUNNEL] Already running, aborting start")
         set_status("Tunnel already running.", "warning")
         return
 
@@ -120,21 +138,26 @@ def start_tunnel(username, password, key_filename, local_port, auto_open):
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        print(f"[SSH] Connecting to {SSH_GATEWAY_HOST}:{SSH_GATEWAY_PORT} as {username}")
         if key_filename:
+            print(f"[SSH] Using key file: {key_filename}")
             client.connect(
                 SSH_GATEWAY_HOST, SSH_GATEWAY_PORT,
                 username=username, key_filename=key_filename,
                 password=password or None
             )
         else:
+            print(f"[SSH] Using password auth")
             client.connect(
                 SSH_GATEWAY_HOST, SSH_GATEWAY_PORT,
                 username=username, password=password or None
             )
+        print("[SSH] Connection established")
 
         transport = client.get_transport()
         if not transport:
             raise Exception("SSH transport not available")
+        print("[SSH] Transport ready")
 
         _tunnel_active = True
 
@@ -144,10 +167,12 @@ def start_tunnel(username, password, key_filename, local_port, auto_open):
             daemon=True
         )
         forward_thread.start()
+        print("[TUNNEL] Forward thread started")
 
         _tunnel_thread = (client, transport, forward_thread)
 
         url = f"http://localhost:{local_port}"
+        print(f"[TUNNEL] Started successfully → {url}")
         root.after(0, lambda: connect_btn.configure(text="Disconnect", bootstyle="danger", command=disconnect))
         root.after(0, lambda: username_entry.configure(state="disabled"))
         root.after(0, lambda: password_entry.configure(state="disabled"))
@@ -157,10 +182,13 @@ def start_tunnel(username, password, key_filename, local_port, auto_open):
         set_status(f"Tunnel started → {url}", "success")
         root.clipboard_clear()
         root.clipboard_append(url)
+        print("[TUNNEL] URL copied to clipboard")
         if auto_open:
+            print("[TUNNEL] Auto-opening browser")
             webbrowser.open(url)
 
     except Exception as e:
+        print(f"[ERROR] Connection failed: {e}")
         set_status(f"Error connecting: {e}", "danger")
         messagebox.showerror("Connection error", str(e))
         _tunnel_active = False
@@ -170,19 +198,21 @@ def start_tunnel(username, password, key_filename, local_port, auto_open):
         root.after(0, lambda: key_entry.configure(state="normal"))
         root.after(0, lambda: local_port_entry.configure(state="normal"))
 
-
 def disconnect():
     global _tunnel_active, _tunnel_thread
+    print("[TUNNEL] Disconnect requested")
     if not _tunnel_active or not _tunnel_thread:
+        print("[TUNNEL] No active tunnel to disconnect")
         set_status("No tunnel running.", "warning")
         return
     client, transport, fwd_thread = _tunnel_thread
     _tunnel_active = False
     try:
+        print("[SSH] Closing transport and client")
         transport.close()
         client.close()
     except Exception as e:
-        print("Error closing tunnel:", e)
+        print("[ERROR] Error closing tunnel:", e)
     _tunnel_thread = None
     set_status("Tunnel closed.", "info")
     root.after(0, lambda: connect_btn.configure(text="Connect", bootstyle=SUCCESS, command=connect))
@@ -199,12 +229,16 @@ def connect():
     local_port = local_port_var.get().strip()
     auto_open = open_check_var.get()
 
+    print(f"[GUI] Connect pressed: user={username}, keyfile={keyfile}, port={local_port}, auto_open={auto_open}")
+
     if not username:
+        print("[GUI] Username missing")
         set_status("Enter username.", "danger")
         return
     try:
         lp = int(local_port)
     except:
+        print("[GUI] Invalid local port entered")
         set_status("Local port must be number.", "danger")
         return
 
@@ -217,17 +251,22 @@ def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
-                return json.load(f)
-        except:
+                cfg = json.load(f)
+                print(f"[CONFIG] Loaded {CONFIG_FILE}: {cfg}")
+                return cfg
+        except Exception as e:
+            print(f"[CONFIG] Error loading config: {e}")
             return {}
+    print("[CONFIG] No config file found")
     return {}
 
 def save_config(cfg):
     try:
         with open(CONFIG_FILE, "w") as f:
             json.dump(cfg, f)
-    except:
-        pass
+        print(f"[CONFIG] Saved {CONFIG_FILE}: {cfg}")
+    except Exception as e:
+        print(f"[CONFIG] Error saving config: {e}")
 
 
 # ---------- GUI Setup ----------
@@ -311,11 +350,15 @@ status_label = ttk.Label(root, text="Ready", font=("Segoe UI", 10), bootstyle="i
 status_label.pack(fill="x", padx=padx, pady=(5, 15))
 
 def on_close():
+    print("[GUI] Window close requested")
     if _tunnel_active:
         if messagebox.askyesno("Exit", "Tunnel is running. Disconnect and exit?"):
+            print("[GUI] User chose to disconnect before exit")
             disconnect()
         else:
+            print("[GUI] User canceled exit")
             return
+    print("[GUI] Destroying root window")
     root.destroy()
 
 root.protocol("WM_DELETE_WINDOW", on_close)
@@ -354,6 +397,9 @@ def show_vpn_warning():
             cfg = load_config()
             cfg["skip_vpn_warning"] = True
             save_config(cfg)
+            print("[GUI] VPN warning disabled for future runs")
+        else:
+            print("[GUI] VPN warning will continue showing")
         warn.destroy()
 
     ok_btn = ttk.Button(warn, text="OK", bootstyle=SUCCESS, command=close_warning)
