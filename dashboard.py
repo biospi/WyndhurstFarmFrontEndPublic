@@ -371,8 +371,8 @@ username_entry.focus_set()
 def show_vpn_warning():
     warn = tk.Toplevel(root)
     warn.title("VPN Requirement")
-    warn.geometry("400x200")
-    warn.resizable(False, False)
+    # warn.geometry("500x400")
+    warn.resizable(True, True)
 
     lbl = ttk.Label(
         warn,
@@ -382,6 +382,7 @@ def show_vpn_warning():
         justify="center"
     )
     lbl.pack(pady=20)
+    lbl.pack(padx=20)
 
     dont_show_var = tk.BooleanVar(value=False)
     cb = ttk.Checkbutton(
