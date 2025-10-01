@@ -28,6 +28,7 @@ SSH_GATEWAY_HOST = "IT106570.users.bris.ac.uk"
 SSH_GATEWAY_PORT = 22
 REMOTE_STREAMLIT_HOST = "127.0.0.1"
 REMOTE_STREAMLIT_PORT = 8501
+REMOTE_FILEBROWSER_PORT = 8502
 DEFAULT_LOCAL_PORT = 8501
 ICON_FILENAME = "uob.png"
 CONFIG_FILE = "dashboard_config.json"
@@ -161,15 +162,25 @@ def start_tunnel(username, password, key_filename, local_port, auto_open):
 
         _tunnel_active = True
 
-        forward_thread = threading.Thread(
+        forward_thread1 = threading.Thread(
             target=forward_tunnel,
             args=(local_port, REMOTE_STREAMLIT_HOST, REMOTE_STREAMLIT_PORT, transport),
             daemon=True
         )
-        forward_thread.start()
+        forward_thread1.start()
         print("[TUNNEL] Forward thread started")
 
-        _tunnel_thread = (client, transport, forward_thread)
+        # Forward File Browser
+        forward_thread2 = threading.Thread(
+            target=forward_tunnel,
+            args=(REMOTE_FILEBROWSER_PORT, REMOTE_STREAMLIT_HOST, REMOTE_FILEBROWSER_PORT, transport),
+            daemon=True
+        )
+        forward_thread2.start()
+        print("[TUNNEL] File Browser forward thread started")
+
+        # Save both threads in _tunnel_thread
+        _tunnel_thread = (client, transport, forward_thread1, forward_thread2)
 
         url = f"http://localhost:{local_port}"
         print(f"[TUNNEL] Started successfully → {url}")
@@ -205,7 +216,7 @@ def disconnect():
         print("[TUNNEL] No active tunnel to disconnect")
         set_status("No tunnel running.", "warning")
         return
-    client, transport, fwd_thread = _tunnel_thread
+    client, transport, fwd_thread, fwd_thread2 = _tunnel_thread
     _tunnel_active = False
     try:
         print("[SSH] Closing transport and client")
@@ -228,6 +239,16 @@ def connect():
     keyfile = keyfile_var.get().strip()
     local_port = local_port_var.get().strip()
     auto_open = open_check_var.get()
+
+    # Save last username if remember option checked
+    cfg = load_config()
+    if remember_user_var.get():
+        cfg["last_username"] = username
+        cfg["remember_username"] = True
+    else:
+        cfg.pop("last_username", None)
+        cfg["remember_username"] = False
+    save_config(cfg)
 
     print(f"[GUI] Connect pressed: user={username}, keyfile={keyfile}, port={local_port}, auto_open={auto_open}")
 
@@ -298,6 +319,8 @@ password_var = tk.StringVar()
 keyfile_var = tk.StringVar()
 local_port_var = tk.StringVar(value=str(DEFAULT_LOCAL_PORT))
 open_check_var = tk.BooleanVar(value=True)
+remember_user_var = tk.BooleanVar(value=False)
+
 
 # Username
 ttk.Label(form, text="Username:").grid(row=0, column=0, sticky="w", pady=4)
@@ -328,6 +351,16 @@ local_port_entry.grid(row=3, column=1, sticky="w", padx=8)
 # Auto open
 open_check = ttk.Checkbutton(form, text="Open browser after connect", variable=open_check_var, bootstyle="success")
 open_check.grid(row=4, column=1, sticky="w", pady=(6,2))
+
+# Remember username
+remember_user_check = ttk.Checkbutton(
+    form,
+    text="Remember username",
+    variable=remember_user_var,
+    bootstyle="secondary"
+)
+remember_user_check.grid(row=5, column=1, sticky="w", pady=(2,6))
+
 
 # Buttons
 buttons = ttk.Frame(root)
@@ -413,6 +446,10 @@ def show_vpn_warning():
 cfg = load_config()
 if not cfg.get("skip_vpn_warning", False):
     root.after(100, show_vpn_warning)
+
+if cfg.get("remember_username", False) and cfg.get("last_username"):
+    username_var.set(cfg["last_username"])
+    remember_user_var.set(True)
 
 # ---------- Run ----------
 root.mainloop()
