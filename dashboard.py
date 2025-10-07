@@ -24,7 +24,7 @@ from ttkbootstrap.constants import *
 import paramiko
 
 # ---------- Config ----------
-SSH_GATEWAY_HOST = "IT106570.users.bris.ac.uk"
+SSH_GATEWAY_HOST = "IT107338.users.bris.ac.uk"
 SSH_GATEWAY_PORT = 22
 REMOTE_STREAMLIT_HOST = "127.0.0.1"
 REMOTE_STREAMLIT_PORT = 8501
