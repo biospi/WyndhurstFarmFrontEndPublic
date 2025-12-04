@@ -136,6 +136,7 @@ def start_tunnel(username, password, key_filename, local_port, auto_open):
 
     set_status("Connecting…", "info")
 
+
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -157,6 +158,12 @@ def start_tunnel(username, password, key_filename, local_port, auto_open):
 
         transport = client.get_transport()
         if not transport:
+            root.after(0, lambda: connect_btn.configure(
+                text="Connect",
+                bootstyle=SUCCESS,
+                command=connect,
+                state="normal"
+            ))
             raise Exception("SSH transport not available")
         print("[SSH] Transport ready")
 
@@ -184,7 +191,14 @@ def start_tunnel(username, password, key_filename, local_port, auto_open):
 
         url = f"http://localhost:{local_port}"
         print(f"[TUNNEL] Started successfully → {url}")
-        root.after(0, lambda: connect_btn.configure(text="Disconnect", bootstyle="danger", command=disconnect))
+        # root.after(0, lambda: connect_btn.configure(text="Disconnect", bootstyle="danger", command=disconnect))
+        root.after(0, lambda: connect_btn.configure(
+            text="Disconnect",
+            bootstyle="danger",
+            command=disconnect,
+            state="normal"
+        ))
+
         root.after(0, lambda: username_entry.configure(state="disabled"))
         root.after(0, lambda: password_entry.configure(state="disabled"))
         root.after(0, lambda: key_entry.configure(state="disabled"))
@@ -203,7 +217,14 @@ def start_tunnel(username, password, key_filename, local_port, auto_open):
         set_status(f"Error connecting: {e}", "danger")
         messagebox.showerror("Connection error", str(e))
         _tunnel_active = False
-        root.after(0, lambda: connect_btn.configure(text="Connect", bootstyle=SUCCESS, command=connect))
+        # root.after(0, lambda: connect_btn.configure(text="Connect", bootstyle=SUCCESS, command=connect))
+        root.after(0, lambda: connect_btn.configure(
+            text="Connect",
+            bootstyle=SUCCESS,
+            command=connect,
+            state="normal"
+        ))
+
         root.after(0, lambda: username_entry.configure(state="normal"))
         root.after(0, lambda: password_entry.configure(state="normal"))
         root.after(0, lambda: key_entry.configure(state="normal"))
@@ -240,6 +261,8 @@ def connect():
     local_port = local_port_var.get().strip()
     auto_open = open_check_var.get()
 
+    # Disable connect button during attempt
+    connect_btn.configure(state="disabled")
     # Save last username if remember option checked
     cfg = load_config()
     if remember_user_var.get():
@@ -397,6 +420,8 @@ def on_close():
 root.protocol("WM_DELETE_WINDOW", on_close)
 
 username_entry.focus_set()
+# Press Enter to Connect
+root.bind('<Return>', lambda event: connect())
 
 
 # ---------- Startup Warning ----------
