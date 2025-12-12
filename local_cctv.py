@@ -2,8 +2,7 @@ import tkinter as tk
 from tkinter import messagebox
 import threading, socket, select, webbrowser, paramiko, ttkbootstrap as ttk
 from ttkbootstrap.constants import *
-import itertools, os
-import subprocess, time, datetime, os
+import itertools, os, subprocess, time, datetime
 from tkinter import filedialog
 from pathlib import Path
 
@@ -15,13 +14,7 @@ with Path("hanwha.txt").open("r") as file:
 with Path("hikvision.txt").open("r") as file:
     HIKVISION_IPS = [line.strip() for line in file if line.strip()]
 
-# HANWHA_IPS = ["10.70.66.52", "10.70.66.53", "10.70.66.141", "10.70.66.50", "10.70.66.49", "10.70.66.47", "10.70.66.45",
-#               "10.70.66.46", "10.70.66.54", "10.70.66.48", "10.70.66.26", "10.70.66.27", "10.70.66.25", "10.70.66.23",
-#               "10.70.66.2", "10.70.66.2", "10.70.66.2", "10.70.66.2", "10.70.66.2", "10.70.66.2", "10.70.66.2",
-#               "10.70.66.2", "10.70.66.2", "10.70.66.2", "10.70.66.2", "10.70.66.2", "10.70.66.2", "10.70.66.2"]
-
 HANWHA_IPS.sort(key=lambda ip: tuple(int(x) for x in ip.split(".")))
-
 HIKVISION_IPS.sort(key=lambda ip: tuple(int(x) for x in ip.split(".")))
 
 config = {
@@ -88,53 +81,6 @@ class TunnelManager:
         self.farm_transport = farm_client.get_transport()
         self.client_chain = [gw_client, farm_client]
 
-    # def forward_tunnel(self, local_port, remote_ip, remote_port, stop_flag=None):
-    #     """Forward localhost:local_port → remote_ip:remote_port with optional stop control."""
-    #     if stop_flag is None:
-    #         stop_flag = threading.Event()  # default if no stop control needed
-    #
-    #     def handler(client_sock):
-    #         try:
-    #             chan = self.farm_transport.open_channel(
-    #                 "direct-tcpip", (remote_ip, remote_port), client_sock.getsockname()
-    #             )
-    #             while True:
-    #                 r, _, _ = select.select([client_sock, chan], [], [], 1)
-    #                 if stop_flag.is_set():
-    #                     break
-    #                 if client_sock in r:
-    #                     data = client_sock.recv(1024)
-    #                     if not data:
-    #                         break
-    #                     chan.send(data)
-    #                 if chan in r:
-    #                     data = chan.recv(1024)
-    #                     if not data:
-    #                         break
-    #                     client_sock.send(data)
-    #         except Exception as e:
-    #             print(f"[ERROR] Tunnel handler for {remote_ip}: {e}")
-    #         finally:
-    #             client_sock.close()
-    #             chan.close()
-    #
-    #     def server(remote_ip=remote_ip):
-    #         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    #         sock.bind(("127.0.0.1", local_port))
-    #         sock.listen(10)
-    #         print(f"[TUNNEL] RTSP tunnel active: localhost:{local_port} → {remote_ip}:{remote_port}")
-    #         while not stop_flag.is_set():
-    #             try:
-    #                 client, _ = sock.accept()
-    #                 threading.Thread(target=handler, args=(client,), daemon=True).start()
-    #             except Exception:
-    #                 break
-    #         sock.close()
-    #         print(f"[TUNNEL] Closed tunnel for {remote_ip}")
-    #
-    #     t = threading.Thread(target=server, daemon=True)
-    #     t.start()
-    #     self.active_tunnels[remote_ip] = (local_port, t)
     def forward_tunnel(self, local_port, remote_ip, remote_port):
         """Forward remote_ip:remote_port → localhost:local_port using Paramiko's port forwarding"""
         print(local_port, remote_ip, remote_port)
@@ -152,7 +98,6 @@ class TunnelManager:
                     chan = self.farm_transport.open_channel(
                         "direct-tcpip", (remote_ip, remote_port), client.getsockname()
                     )
-
                     threading.Thread(target=self._pipe, args=(client, chan), daemon=True).start()
                 except Exception as e:
                     print(f"[TUNNEL] Accept error: {e}")
@@ -182,8 +127,14 @@ class TunnelManager:
         except Exception as e:
             print(f"[PIPE ERROR] {e}")
         finally:
-            client_sock.close()
-            chan.close()
+            try:
+                client_sock.close()
+            except Exception:
+                pass
+            try:
+                chan.close()
+            except Exception:
+                pass
 
     def open_camera(self, ip, port=80):
         local_port = next(self.port_gen)
@@ -201,12 +152,80 @@ class TunnelManager:
         self.active_tunnels.clear()
 
 
+# ---------- Scrollable Frame (camera list only) ----------
+class ScrollFrame(ttk.Frame):
+    """A scrollable frame using a canvas + interior frame."""
+    def __init__(self, parent, height=300, *args, **kwargs):
+        super().__init__(parent, *args, **kwargs)
+
+        self.canvas = tk.Canvas(self, highlightthickness=0)
+        self.vscroll = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vscroll.set)
+
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.vscroll.pack(side="right", fill="y")
+
+        # Interior frame that will actually hold widgets
+        self.interior = ttk.Frame(self.canvas)
+        self.interior_id = self.canvas.create_window((0, 0), window=self.interior, anchor="nw")
+
+        # Bind to update scrollregion when interior changes
+        self.interior.bind("<Configure>", self._on_frame_configure)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+
+        # Mousewheel bindings for convenience
+        self.canvas.bind("<Enter>", lambda e: self._bind_mousewheel())
+        self.canvas.bind("<Leave>", lambda e: self._unbind_mousewheel())
+
+        # For platforms that use button-4/5
+        self.canvas.bind_all("<Button-4>", self._on_mousewheel, add="+")
+        self.canvas.bind_all("<Button-5>", self._on_mousewheel, add="+")
+
+    def _on_frame_configure(self, event):
+        # Update scroll region to match interior size
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event):
+        # Make the interior frame width match the canvas width
+        try:
+            self.canvas.itemconfig(self.interior_id, width=event.width)
+        except Exception:
+            pass
+
+    def _bind_mousewheel(self):
+        # Windows / macOS
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def _unbind_mousewheel(self):
+        self.canvas.unbind_all("<MouseWheel>")
+
+    def _on_mousewheel(self, event):
+        # Cross-platform mousewheel handler
+        try:
+            if hasattr(event, "delta"):  # Windows / macOS
+                if event.delta < 0:
+                    self.canvas.yview_scroll(1, "unit")
+                elif event.delta > 0:
+                    self.canvas.yview_scroll(-1, "unit")
+            elif event.num == 5:  # X11 scroll down
+                self.canvas.yview_scroll(1, "unit")
+            elif event.num == 4:  # X11 scroll up
+                self.canvas.yview_scroll(-1, "unit")
+        except Exception:
+            pass
+
+
 # ---------- GUI ----------
 class CCTVApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Wyndhurst Tunnel Dashboard")
-        self.root.resizable(False, False)
+
+        # ALLOW resizing so geometry("") can shrink/expand to fit content
+        self.root.resizable(True, True)
+
+        # Make the root window a sensible minimum size
+        self.root.minsize(640, 360)
 
         self.manager = None
         self.username_var = tk.StringVar()
@@ -215,6 +234,14 @@ class CCTVApp:
 
         self.load_last_username()
         self.setup_ui()
+
+        # Force a layout calculation and auto-size window to content
+        self.root.update_idletasks()
+        # geometry("") instructs Tk to fit window to its requested size
+        try:
+            self.root.geometry("")   # auto-size to content
+        except Exception:
+            pass
 
         self.recording_threads = {}
         self.stop_flags = {}
@@ -316,53 +343,63 @@ class CCTVApp:
                 os.remove(LAST_USER_FILE)
 
     def setup_ui(self):
-        frame = ttk.Frame(self.root, padding=20)
-        frame.pack(fill="both", expand=True)
+        # Outer frame holds header/login + scrollable camera area + status
+        outer = ttk.Frame(self.root, padding=12)
+        outer.pack(fill="both", expand=True)
 
-        ttk.Label(frame, text="SSH Username:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=self.username_var, width=25).grid(row=0, column=0, padx=5, pady=5)
+        # --- Header / SSH login (fixed; not scrollable) ---
+        header = ttk.Frame(outer)
+        header.pack(fill="x", pady=(0, 8))
 
-        ttk.Label(frame, text="SSH Password (or key):").grid(row=1, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=self.password_var, width=25, show="*").grid(row=1, column=0, padx=5, pady=5)
+        # Row 0 (username)
+        ttk.Label(header, text="SSH Username:").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Entry(header, textvariable=self.username_var, width=25).grid(row=0, column=1, padx=5, pady=4, sticky="w")
+
+        # Row 1 (password)
+        ttk.Label(header, text="SSH Password (or key):").grid(row=1, column=0, sticky="w", padx=(0, 6))
+        ttk.Entry(header, textvariable=self.password_var, width=25, show="*").grid(row=1, column=1, padx=5, pady=4, sticky="w")
 
         ttk.Checkbutton(
-            frame, text="Remember username", variable=self.remember_user_var, bootstyle="round-toggle"
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 10))
+            header, text="Remember username", variable=self.remember_user_var, bootstyle="round-toggle"
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
-        ttk.Button(frame, text="Connect", bootstyle=SUCCESS, command=self.connect_ssh).grid(
-            row=3, column=0, rowspan=1, padx=10
+        ttk.Button(header, text="Connect", bootstyle=SUCCESS, command=self.connect_ssh).grid(
+            row=0, column=2, rowspan=2, padx=(10, 0)
         )
 
-        ttk.Separator(frame).grid(row=4, columnspan=3, sticky="ew", pady=10)
+        # Separator
+        ttk.Separator(outer).pack(fill="x", pady=6)
 
-        # Center camera list
-        self.cameras_frame = ttk.Frame(frame)
-        self.cameras_frame.grid(row=5, column=0, columnspan=3, sticky="nsew")
-        self.cameras_frame.grid_columnconfigure((0, 1, 2), weight=1)
+        # --- Scrollable camera list (this is Option A: only camera list scrolls) ---
+        scroll = ScrollFrame(outer, height=300)
+        scroll.pack(fill="both", expand=True, pady=(6, 6))
+        self.cameras_frame = scroll.interior
 
-        ttk.Label(self.cameras_frame, text="Camera IP").grid(row=0, column=0, padx=8, pady=3, sticky="e")
-        ttk.Label(self.cameras_frame, text="Port").grid(row=0, column=1, padx=8, pady=3, sticky="ew")
+        # Make columns expand within the interior frame
+        # Note: we use groups of 3 columns (IP, Port, Actions) repeated across columns
+        # Ensure the exterior scroll frame expands horizontally
+        self.cameras_frame.grid_columnconfigure(0, weight=1)
+
+        # Header row inside cameras_frame
+        ttk.Label(self.cameras_frame, text="IP").grid(row=0, column=0, padx=5, pady=3)
+        ttk.Label(self.cameras_frame, text="Port").grid(row=0, column=1, padx=5, pady=3)
+        ttk.Label(self.cameras_frame, text="Actions").grid(row=0, column=2, padx=5, pady=3)
 
         self.cam_entries = []
         all_ips = HANWHA_IPS + HIKVISION_IPS
-        num_columns = 4
-        max_rows_per_column = 20
+        max_rows_per_column = 2000  # we will place all in one continuous column since we scroll
 
-        ip_var_list = []
         for idx, ip in enumerate(all_ips):
-            col = idx // max_rows_per_column
-            row = (idx % max_rows_per_column) + 1  # +1 to leave row 0 for headers
+            row = idx + 1  # +1 to leave row 0 for headers
 
             ip_var = tk.StringVar(value=ip)
-            ip_var_list.append(ip_var)
-            port_var = tk.StringVar(value=80)
+            port_var = tk.StringVar(value="80")
 
-            ttk.Entry(self.cameras_frame, textvariable=ip_var, width=18).grid(row=row, column=col * 3, padx=5, pady=3)
-            ttk.Entry(self.cameras_frame, textvariable=port_var, width=6).grid(row=row, column=col * 3 + 1, padx=5,
-                                                                               pady=3)
+            ttk.Entry(self.cameras_frame, textvariable=ip_var, width=18).grid(row=row, column=0, padx=5, pady=3, sticky="w")
+            ttk.Entry(self.cameras_frame, textvariable=port_var, width=6).grid(row=row, column=1, padx=5, pady=3, sticky="w")
 
             btn_frame = ttk.Frame(self.cameras_frame)
-            btn_frame.grid(row=row, column=col * 3 + 2, padx=5, pady=3)
+            btn_frame.grid(row=row, column=2, padx=5, pady=3, sticky="w")
             ttk.Button(btn_frame, text="Open", command=lambda iv=ip_var, pv=port_var: self.open_cam(iv, pv),
                        bootstyle=PRIMARY if ip in HANWHA_IPS else SECONDARY).pack(side="left", padx=2)
             ttk.Button(btn_frame, text="Record", command=lambda iv=ip_var, pv=port_var: self.start_recording(iv, pv),
@@ -372,41 +409,9 @@ class CCTVApp:
 
             self.cam_entries.append((ip_var, port_var))
 
-        # Column headers
-        for col in range(num_columns):
-            ttk.Label(self.cameras_frame, text="IP").grid(row=0, column=col * 3, padx=5, pady=3)
-            ttk.Label(self.cameras_frame, text="Port").grid(row=0, column=col * 3 + 1, padx=5, pady=3)
-            ttk.Label(self.cameras_frame, text="Actions").grid(row=0, column=col * 3 + 2, padx=5, pady=3)
-
-        # for i in range(10):
-        #     ip_var = tk.StringVar(value="10.70.66.")
-        #     port_var = tk.StringVar(value=f"{80+i}")
-        #     ttk.Entry(self.cameras_frame, textvariable=ip_var, width=18).grid(
-        #         row=i+1, column=0, padx=8, pady=3, sticky="e"
-        #     )
-        #     ttk.Entry(self.cameras_frame, textvariable=port_var, width=6).grid(
-        #         row=i+1, column=1, padx=8, sticky="ew"
-        #     )
-        #     btn = ttk.Button(
-        #         self.cameras_frame,
-        #         text="Open Web UI",
-        #         command=lambda iv=ip_var, pv=port_var: self.open_cam(iv, pv),
-        #         bootstyle=PRIMARY
-        #     )
-        #
-        #     ttk.Button(self.cameras_frame, text="Record",
-        #                command=lambda iv=ip_var, pv=port_var: self.start_recording(iv, pv),
-        #                bootstyle=SUCCESS).grid(row=i+1, column=3, padx=4)
-        #
-        #     ttk.Button(self.cameras_frame, text="Stop",
-        #                command=lambda iv=ip_var: self.stop_recording(iv),
-        #                bootstyle=DANGER).grid(row=i+1, column=4, padx=4)
-        #
-        #     btn.grid(row=i+1, column=2, padx=10, sticky="w")
-        #     self.cam_entries.append((ip_var, port_var))
-
-        self.status = ttk.Label(frame, text="Disconnected.", bootstyle="danger")
-        self.status.grid(row=20, columnspan=3, pady=(20, 0))
+        # --- Status bar (fixed) ---
+        self.status = ttk.Label(outer, text="Disconnected.", bootstyle="danger")
+        self.status.pack(fill="x", pady=(8, 0))
 
     def connect_ssh(self):
         user = self.username_var.get().strip()
