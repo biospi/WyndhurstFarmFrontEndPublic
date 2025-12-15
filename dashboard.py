@@ -354,6 +354,7 @@ username_entry.grid(row=0, column=1, sticky="w", padx=8)
 ttk.Label(form, text="Password (or leave blank for SSH key):").grid(row=1, column=0, sticky="w", pady=4)
 password_entry = ttk.Entry(form, textvariable=password_var, width=30, show="*")
 password_entry.grid(row=1, column=1, sticky="w", padx=8)
+password_entry.focus_set()
 
 pw_show_var = tk.BooleanVar(value=False)
 def toggle_show_pw():

@@ -1,3 +1,5 @@
+import shutil
+import signal
 import tkinter as tk
 from tkinter import messagebox
 import threading, socket, select, webbrowser, paramiko, ttkbootstrap as ttk
@@ -34,7 +36,7 @@ SSH_GATEWAY = "IT107338.users.bris.ac.uk"
 SSH_GATEWAY_PORT = 22
 FARM_PC = "10.70.66.2"
 FARM_PC_PORT = 22
-START_PORT = 8080
+START_PORT = 9000
 LAST_USER_FILE = ".last_user.txt"
 # ----------------------------
 
@@ -46,6 +48,7 @@ RPI_INTERMEDIATE_PORT = 30022
 RPI_LOCAL_PORT = 38765
 # ----------------------------------------------
 
+
 class TunnelManager:
     def __init__(self, gateway_user, gateway_pass=None, keyfile=None):
         self.gateway_user = gateway_user
@@ -56,6 +59,12 @@ class TunnelManager:
         self.client_chain = []
         self.active_tunnels = {}
         self.port_gen = itertools.count(START_PORT)
+
+    def forward_rtsp_paramiko(self, ip):
+        local_port = next(self.port_gen)
+        stop_flag = self.forward_tunnel(local_port, ip, 554)
+        time.sleep(2)
+        return local_port, stop_flag
 
     def open_raspberry_paramiko(self, raspberry_ip):
         local_port = RPI_LOCAL_PORT
@@ -95,6 +104,20 @@ class TunnelManager:
         url = f"http://localhost:{local_port}/"
         webbrowser.open(url)
         return url
+
+    def start_rtsp_tunnel(self, local_port, camera_ip):
+        return subprocess.Popen(
+            [
+                "ssh",
+                "-N",
+                "-o", "ExitOnForwardFailure=yes",
+                "-J", f"{self.gateway_user}@{SSH_GATEWAY}",
+                "-L", f"{local_port}:{camera_ip}:554",
+                f"{self.gateway_user}@{FARM_PC}",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
 
     def connect_chain(self):
         """Establish SSH chain: Laptop → Ubuntu Server → Farm PC"""
@@ -158,6 +181,7 @@ class TunnelManager:
 
         threading.Thread(target=server, daemon=True).start()
         return stop_flag
+
 
     @staticmethod
     def _pipe(client_sock, chan):
@@ -298,80 +322,316 @@ class CCTVApp:
         self.root.bind('<Return>', lambda event: self.connect_ssh())
 
         self.recording_threads = {}
+        self.recording_procs = {}
         self.stop_flags = {}
+        self.ssh_tunnels = {}
 
-    # ---------------- Recording Logic ----------------
-    def start_recording(self, ip_var, port_var):
+        self.recording_procs = {}  # ip -> subprocess.Popen
+        self.recording_ports = {}  # ip -> local rtsp port
+        self.recording_flags = {}  # ip -> threading.Event
+
+    def open_in_vlc(self, rtsp_url):
+        """
+        Launch VLC externally with the RTSP URL.
+        User controls recording inside VLC.
+        """
+        vlc_candidates = []
+
+        # Windows common paths
+        if os.name == "nt":
+            vlc_candidates = [
+                r"C:\Program Files\VideoLAN\VLC\vlc.exe",
+                r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe",
+            ]
+
+        # Fallback: PATH (Windows/Linux/macOS)
+        vlc_in_path = shutil.which("vlc")
+        if vlc_in_path:
+            vlc_candidates.append(vlc_in_path)
+
+        for vlc in vlc_candidates:
+            try:
+                subprocess.Popen([vlc, rtsp_url])
+                return
+            except Exception:
+                continue
+
+        messagebox.showerror(
+            "VLC not found",
+            "VLC is not installed or not found in PATH."
+        )
+
+    def open_cam_vlc(self, ip_var):
         ip = ip_var.get().strip()
-        port = int(port_var.get().strip() or 80)
+
         if not ip:
-            messagebox.showwarning("Missing IP", "Please enter camera IP first.")
+            messagebox.showwarning("Missing IP", "Please enter camera IP.")
             return
 
         if not self.manager:
             messagebox.showwarning("Not connected", "Connect SSH first.")
             return
 
-        save_dir = filedialog.askdirectory(title=f"Select recording destination for {ip}")
+        # --- Create RTSP tunnel ---
+        local_port, _ = self.manager.forward_rtsp_paramiko(ip)
+        time.sleep(1)
+
+        # --- Build RTSP URL ---
+        if ip in HANWHA_IPS:
+            rtsp_url = (
+                f"rtsp://admin:{config['AUTH']['password_hanwha']}"
+                f"@localhost:{local_port}/profile2/media.smp"
+            )
+        elif ip in HIKVISION_IPS:
+            rtsp_url = (
+                f"rtsp://admin:{config['AUTH']['password_hikvision']}"
+                f"@localhost:{local_port}/Streaming/channels/101"
+            )
+        else:
+            messagebox.showerror("Unknown camera", ip)
+            return
+
+        print(f"[VLC] Opening {rtsp_url}")
+        self.open_in_vlc(rtsp_url)
+
+        self.status.config(text=f"Opened {ip} in VLC", bootstyle="info")
+
+
+    # ---------------- Recording Logic ----------------
+    # def start_recording(self, ip_var, port_var):
+    #     ip = ip_var.get().strip()
+    #     port = int(port_var.get().strip() or 80)
+    #     if not ip:
+    #         messagebox.showwarning("Missing IP", "Please enter camera IP first.")
+    #         return
+    #
+    #     if not self.manager:
+    #         messagebox.showwarning("Not connected", "Connect SSH first.")
+    #         return
+    #
+    #     save_dir = filedialog.askdirectory(title=f"Select recording destination for {ip}")
+    #     if not save_dir:
+    #         return
+    #
+    #     if ip in self.recording_threads and self.recording_threads[ip].is_alive():
+    #         messagebox.showinfo("Recording", f"{ip} is already being recorded.")
+    #         return
+    #
+    #     # Create Paramiko tunnel for RTSP
+    #     local_port, stop_flag = self.manager.forward_rtsp_paramiko(ip)
+    #     self.stop_flags[ip] = stop_flag
+    #     time.sleep(2)  # give tunnel time to establish
+    #     self.status.config(text=f"Recording from {ip}...", bootstyle="info")
+    #
+    #     def record_loop():
+    #         while not stop_flag.is_set():
+    #             if stop_flag.is_set():
+    #                 break
+    #             start_time = datetime.datetime.now()
+    #             end_time = start_time + datetime.timedelta(seconds=CHUNK_DURATION)
+    #
+    #             start_str = start_time.strftime("%Y%m%d_%H%M%S")
+    #             end_str = end_time.strftime("%Y%m%d_%H%M%S")
+    #             output_file = Path(save_dir) / f"{ip.replace('.', '_')}_{start_str}_to_{end_str}.mp4"
+    #
+    #             if ip in HANWHA_IPS:
+    #                 rtsp_url = f"rtsp://admin:{config['AUTH']['password_hanwha']}@localhost:{local_port}/profile2/media.smp"
+    #             elif ip in HIKVISION_IPS:
+    #                 rtsp_url = f"rtsp://admin:{config['AUTH']['password_hikvision']}@localhost:{local_port}/Streaming/channels/101"
+    #             else:
+    #                 print(f"[WARN] Unknown camera type for {ip}")
+    #                 break
+    #
+    #             command = [
+    #                 "ffmpeg",
+    #                 "-y",
+    #                 "-rtsp_transport", "tcp",
+    #                 "-timeout", "5000000",
+    #                 "-i", rtsp_url,
+    #                 "-c:v", "libx264",
+    #                 "-preset", "fast",
+    #                 "-crf", "28",
+    #                 # "-t", str(CHUNK_DURATION),
+    #                 output_file.as_posix()
+    #             ]
+    #
+    #             print(f"[RECORD] Running: {' '.join(command)}")
+    #             # proc = subprocess.Popen(command, stdin=subprocess.PIPE)
+    #             proc = subprocess.Popen(
+    #                 command,
+    #                 stdin=subprocess.PIPE,
+    #                 stdout=subprocess.PIPE,
+    #                 stderr=subprocess.PIPE,
+    #                 shell=False
+    #             )
+    #             self.recording_procs[ip] = proc
+    #
+    #             # Wait for FFmpeg to finish chunk or stop
+    #             try:
+    #                 # Wait until either chunk duration expires or stop_flag is set
+    #                 start = time.time()
+    #                 while proc.poll() is None:
+    #                     elapsed = time.time() - start
+    #                     if stop_flag.is_set() or elapsed >= CHUNK_DURATION:
+    #                         try:
+    #                             ##proc.send_signal(signal.SIGINT if os.name != "nt" else signal.CTRL_C_EVENT)
+    #                             #proc.terminate()
+    #                             # proc.send_signal(signal.CTRL_C_EVENT)
+    #                             # proc.wait(timeout=10)
+    #                             proc.stdin.write(b'q')
+    #                             proc.stdin.flush()
+    #                             proc.wait()
+    #
+    #                         except Exception:
+    #                             proc.kill()
+    #                         break
+    #                     time.sleep(0.5)
+    #                 # while proc.poll() is None:
+    #                 #     if stop_flag.is_set():
+    #                 #         try:
+    #                 #             proc.send_signal(signal.SIGINT if os.name != "nt" else signal.CTRL_C_EVENT)
+    #                 #             proc.wait(timeout=10)
+    #                 #         except Exception:
+    #                 #             proc.kill()
+    #                 #
+    #                 #         return
+    #                 #     time.sleep(0.5)
+    #             except Exception as e:
+    #                 print(f"[ERROR] ffmpeg failed for {ip}: {e}")
+    #                 # Stop recording completely when ffmpeg fails
+    #                 break
+    #
+    #             if ip in self.recording_procs:
+    #                 del self.recording_procs[ip]
+    #
+    #         print(f"[STOP] Recording stopped for {ip}")
+    #     t = threading.Thread(target=record_loop, daemon=True)
+    #     self.recording_threads[ip] = t
+    #     t.start()
+    #
+    # def stop_recording(self, ip_var):
+    #     ip = ip_var.get().strip()
+    #     if ip not in self.stop_flags:
+    #         messagebox.showinfo("Not recording", f"No active recording for {ip}")
+    #         return
+    #
+    #     self.stop_flags[ip].set()  # signal thread to stop
+    #     proc = self.recording_procs.get(ip)
+    #     if proc.poll() is None:
+    #         try:
+    #             proc.communicate(input=b'q', timeout=5)  # send 'q' to stop FFmpeg gracefully
+    #         except Exception:
+    #             proc.kill()  # fallback if needed
+    #
+    #     # if ip in self.recording_procs:
+    #     #     del self.recording_procs[ip]
+    #     # self.status.config(text=f"Stopped recording {ip}", bootstyle="warning")
+    #     # Clean up
+    #     self.recording_procs.pop(ip, None)
+    #     self.stop_flags.pop(ip, None)
+    #     self.status.config(text=f"Stopped recording {ip}", bootstyle="warning")
+
+    def start_recording(self, ip_var, port_var):
+        ip = ip_var.get().strip()
+
+        if not ip:
+            messagebox.showwarning("Missing IP", "Please enter camera IP.")
+            return
+
+        if not self.manager:
+            messagebox.showwarning("Not connected", "Connect SSH first.")
+            return
+
+        if ip in self.recording_procs:
+            messagebox.showinfo("Recording", f"{ip} is already recording.")
+            return
+
+        save_dir = filedialog.askdirectory(
+            title=f"Select recording destination for {ip}"
+        )
         if not save_dir:
             return
 
-        # Create tunnel if not already active
-        local_port = next(self.manager.port_gen)
-        self.manager.forward_tunnel(local_port, ip, 554)
-        self.status.config(text=f"Recording from {ip}...", bootstyle="info")
+        # --- RTSP tunnel ---
+        local_port, stop_flag = self.manager.forward_rtsp_paramiko(ip)
+        self.recording_ports[ip] = local_port
+        self.recording_flags[ip] = stop_flag
 
-        stop_flag = threading.Event()
-        self.stop_flags[ip] = stop_flag
+        time.sleep(1)
 
-        def record_loop():
-            while not stop_flag.is_set():
-                start_time = datetime.datetime.now()
-                end_time = start_time + datetime.timedelta(seconds=CHUNK_DURATION)
+        # --- RTSP URL ---
+        if ip in HANWHA_IPS:
+            rtsp_url = (
+                f"rtsp://admin:{config['AUTH']['password_hanwha']}"
+                f"@localhost:{local_port}/profile2/media.smp"
+            )
+        elif ip in HIKVISION_IPS:
+            rtsp_url = (
+                f"rtsp://admin:{config['AUTH']['password_hikvision']}"
+                f"@localhost:{local_port}/Streaming/channels/101"
+            )
+        else:
+            messagebox.showerror("Unknown camera", ip)
+            return
 
-                start_str = start_time.strftime("%Y%m%d_%H%M%S")
-                end_str = end_time.strftime("%Y%m%d_%H%M%S")
-                output_file = Path(save_dir) / f"{ip.replace('.', '_')}_{start_str}_to_{end_str}.mp4"
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = Path(save_dir) / f"{ip.replace('.', '_')}_{timestamp}_%03d.mp4"
 
-                # Select format
-                if ip in HANWHA_IPS:
-                    rtsp_url = f"rtsp://admin:{config['AUTH']['password_hanwha']}@localhost:{local_port}/profile2/media.smp"
-                if ip in HIKVISION_IPS:
-                    rtsp_url = f"rtsp://admin:{config['AUTH']['password_hikvision']}@localhost:{local_port}/Streaming/channels/101"
+        # --- FFmpeg with native segmentation ---
+        command = [
+            "ffmpeg",
+            "-loglevel", "debug",
+            "-rtsp_transport", "tcp",
+            "-timeout", "5000000",
+            "-i", rtsp_url,
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "28",
+            "-f", "segment",
+            "-segment_time", str(CHUNK_DURATION),
+            "-reset_timestamps", "1",
+            filename.as_posix(),
+        ]
 
-                command = [
-                    "ffmpeg", "-y",
-                    "-rtsp_transport", "tcp",
-                    "-i", rtsp_url,
-                    "-t", str(CHUNK_DURATION),
-                    "-c:v", "libx264",
-                    "-preset", "fast",
-                    "-crf", "28",
-                    "-r", "16",
-                    "-an",
-                    output_file.as_posix()
-                ]
+        print("[RECORD]", " ".join(command))
 
-                print(f"[RECORD] Running: {' '.join(command)}")
-                try:
-                    subprocess.run(command, check=True)
-                except subprocess.CalledProcessError as e:
-                    print(f"[ERROR] Recording {ip}: {e}")
-                    break
+        proc = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
-            print(f"[STOP] Recording stopped for {ip}")
-
-        t = threading.Thread(target=record_loop, daemon=True)
-        self.recording_threads[ip] = t
-        t.start()
+        self.recording_procs[ip] = proc
+        self.status.config(text=f"Recording {ip}", bootstyle="success")
 
     def stop_recording(self, ip_var):
         ip = ip_var.get().strip()
-        if ip in self.stop_flags:
-            self.stop_flags[ip].set()
-            self.status.config(text=f"Stopped recording {ip}", bootstyle="warning")
-        else:
-            messagebox.showinfo("Not recording", f"No active recording for {ip}")
+
+        proc = self.recording_procs.get(ip)
+        if not proc:
+            messagebox.showinfo("Not recording", f"{ip} is not recording.")
+            return
+
+        print(f"[STOP] Stopping recording for {ip}")
+
+        try:
+            proc.stdin.write(b"q\n")
+            proc.stdin.flush()
+            proc.wait(timeout=10)
+        except Exception:
+            proc.kill()
+
+        # Stop tunnel
+        flag = self.recording_flags.get(ip)
+        if flag:
+            flag.set()
+
+        self.recording_procs.pop(ip, None)
+        self.recording_ports.pop(ip, None)
+        self.recording_flags.pop(ip, None)
+
+        self.status.config(text=f"Stopped recording {ip}", bootstyle="warning")
 
     def load_last_username(self):
         """Load the last saved username if it exists."""
@@ -411,7 +671,9 @@ class CCTVApp:
 
         # Row 1 (password)
         ttk.Label(header, text="SSH Password (or key):").grid(row=1, column=0, sticky="w", padx=(0, 6))
-        ttk.Entry(header, textvariable=self.password_var, width=25, show="*").grid(row=1, column=1, padx=5, pady=4, sticky="w")
+        self.password_entry = ttk.Entry(header, textvariable=self.password_var, width=25, show="*")
+        self.password_entry.grid(row=1, column=1, padx=5, pady=4, sticky="w")
+        self.password_entry.focus_set()
 
         ttk.Checkbutton(
             header, text="Remember username", variable=self.remember_user_var, bootstyle="round-toggle"
@@ -455,16 +717,23 @@ class CCTVApp:
             btn_frame.grid(row=row, column=2, padx=5, pady=3, sticky="w")
 
             if ip in HANWHA_IPS:
-                ttk.Button(btn_frame, text="Open", command=lambda iv=ip_var, pv=port_var: self.open_cam(iv, pv),
+                ttk.Button(btn_frame, text="Open Webview", command=lambda iv=ip_var, pv=port_var: self.open_cam(iv, pv),
                            bootstyle=PRIMARY).pack(side="left", padx=2)
 
             if ip in HIKVISION_IPS:
-                ttk.Button(btn_frame, text="Open", command=lambda iv=ip_var, pv=port_var: self.open_cam(iv, pv),
+                ttk.Button(btn_frame, text="Open Webview", command=lambda iv=ip_var, pv=port_var: self.open_cam(iv, pv),
                            bootstyle=INFO).pack(side="left", padx=2)
 
             if ip in RASPBERRY_IPS:
-                ttk.Button(btn_frame, text="Open", command=lambda iv=ip_var, pv=port_var: self.open_cam(iv, pv),
+                ttk.Button(btn_frame, text="Open Webview", command=lambda iv=ip_var, pv=port_var: self.open_cam(iv, pv),
                            bootstyle=WARNING).pack(side="left", padx=2)
+
+            ttk.Button(
+                btn_frame,
+                text="Open in VLC",
+                command=lambda iv=ip_var: self.open_cam_vlc(iv),
+                bootstyle=PRIMARY
+            ).pack(side="left", padx=2)
 
             ttk.Button(btn_frame, text="Record", command=lambda iv=ip_var, pv=port_var: self.start_recording(iv, pv),
                        bootstyle=SUCCESS).pack(side="left", padx=2)
