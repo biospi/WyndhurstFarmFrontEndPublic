@@ -14,8 +14,13 @@ with Path("hanwha.txt").open("r") as file:
 with Path("hikvision.txt").open("r") as file:
     HIKVISION_IPS = [line.strip() for line in file if line.strip()]
 
+with Path("raspberry.txt").open("r") as file:
+    RASPBERRY_IPS = [line.strip() for line in file if line.strip()]
+
 HANWHA_IPS.sort(key=lambda ip: tuple(int(x) for x in ip.split(".")))
 HIKVISION_IPS.sort(key=lambda ip: tuple(int(x) for x in ip.split(".")))
+RASPBERRY_IPS.sort(key=lambda ip: tuple(int(x) for x in ip.split(".")))
+
 
 config = {
     "AUTH": {
@@ -34,6 +39,13 @@ LAST_USER_FILE = ".last_user.txt"
 # ----------------------------
 
 
+# ---------- RASPBERRY PI TUNNEL CONFIG ----------
+RPI_REMOTE_PORT = 8765
+
+RPI_INTERMEDIATE_PORT = 30022
+RPI_LOCAL_PORT = 38765
+# ----------------------------------------------
+
 class TunnelManager:
     def __init__(self, gateway_user, gateway_pass=None, keyfile=None):
         self.gateway_user = gateway_user
@@ -44,6 +56,45 @@ class TunnelManager:
         self.client_chain = []
         self.active_tunnels = {}
         self.port_gen = itertools.count(START_PORT)
+
+    def open_raspberry_paramiko(self, raspberry_ip):
+        local_port = RPI_LOCAL_PORT
+
+        # Reuse existing farm_transport
+        stop_flag = threading.Event()
+
+        def server():
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.bind(("127.0.0.1", local_port))
+            sock.listen(5)
+
+            print(f"[RPI] localhost:{local_port} → {raspberry_ip}:{RPI_REMOTE_PORT}")
+
+            while not stop_flag.is_set():
+                try:
+                    client, _ = sock.accept()
+                    chan = self.farm_transport.open_channel(
+                        "direct-tcpip",
+                        (raspberry_ip, RPI_REMOTE_PORT),
+                        client.getsockname()
+                    )
+                    threading.Thread(
+                        target=self._pipe,
+                        args=(client, chan),
+                        daemon=True
+                    ).start()
+                except Exception as e:
+                    print("[RPI ERROR]", e)
+                    break
+
+            sock.close()
+
+        threading.Thread(target=server, daemon=True).start()
+        time.sleep(0.5)
+
+        url = f"http://localhost:{local_port}/"
+        webbrowser.open(url)
+        return url
 
     def connect_chain(self):
         """Establish SSH chain: Laptop → Ubuntu Server → Farm PC"""
@@ -243,6 +294,9 @@ class CCTVApp:
         except Exception:
             pass
 
+        # Press Enter to Connect
+        self.root.bind('<Return>', lambda event: self.connect_ssh())
+
         self.recording_threads = {}
         self.stop_flags = {}
 
@@ -386,8 +440,7 @@ class CCTVApp:
         ttk.Label(self.cameras_frame, text="Actions").grid(row=0, column=2, padx=5, pady=3)
 
         self.cam_entries = []
-        all_ips = HANWHA_IPS + HIKVISION_IPS
-        max_rows_per_column = 2000  # we will place all in one continuous column since we scroll
+        all_ips = HANWHA_IPS + HIKVISION_IPS + RASPBERRY_IPS
 
         for idx, ip in enumerate(all_ips):
             row = idx + 1  # +1 to leave row 0 for headers
@@ -400,8 +453,19 @@ class CCTVApp:
 
             btn_frame = ttk.Frame(self.cameras_frame)
             btn_frame.grid(row=row, column=2, padx=5, pady=3, sticky="w")
-            ttk.Button(btn_frame, text="Open", command=lambda iv=ip_var, pv=port_var: self.open_cam(iv, pv),
-                       bootstyle=PRIMARY if ip in HANWHA_IPS else SECONDARY).pack(side="left", padx=2)
+
+            if ip in HANWHA_IPS:
+                ttk.Button(btn_frame, text="Open", command=lambda iv=ip_var, pv=port_var: self.open_cam(iv, pv),
+                           bootstyle=PRIMARY).pack(side="left", padx=2)
+
+            if ip in HIKVISION_IPS:
+                ttk.Button(btn_frame, text="Open", command=lambda iv=ip_var, pv=port_var: self.open_cam(iv, pv),
+                           bootstyle=INFO).pack(side="left", padx=2)
+
+            if ip in RASPBERRY_IPS:
+                ttk.Button(btn_frame, text="Open", command=lambda iv=ip_var, pv=port_var: self.open_cam(iv, pv),
+                           bootstyle=WARNING).pack(side="left", padx=2)
+
             ttk.Button(btn_frame, text="Record", command=lambda iv=ip_var, pv=port_var: self.start_recording(iv, pv),
                        bootstyle=SUCCESS).pack(side="left", padx=2)
             ttk.Button(btn_frame, text="Stop", command=lambda iv=ip_var: self.stop_recording(iv),
@@ -423,7 +487,7 @@ class CCTVApp:
         try:
             self.manager = TunnelManager(user, pwd)
             self.manager.connect_chain()
-            self.status.config(text="Connected via Ubuntu server → Farm PC", bootstyle="success")
+            self.status.config(text="Connected.", bootstyle="success")
         except Exception as e:
             print(e)
             messagebox.showerror("Connection failed", str(e))
@@ -443,7 +507,12 @@ class CCTVApp:
             messagebox.showwarning("Missing IP", "Please enter camera IP.")
             return
         try:
-            url = self.manager.open_camera(ip, port)
+            # url = self.manager.open_camera(ip, port)
+            if ip in RASPBERRY_IPS:
+                url = self.manager.open_raspberry_paramiko(ip)
+            else:
+                url = self.manager.open_camera(ip, port)
+
             self.status.config(text=f"Opened {url}", bootstyle="info")
         except Exception as e:
             print(e)
